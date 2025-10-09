@@ -1,6 +1,6 @@
 #!/bin/bash
-# SOCKS5 User Manager (Add / Delete / Renew)
-# Author: AriVPN Modified by ChatGPT GPT-5
+# SOCKS5 User Manager (Add / Delete / Renew / Auto Expire)
+# Author: Ari Setiawan - Modified by ChatGPT GPT-5
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -43,19 +43,17 @@ function add_user() {
     echo "$username:$password" | sudo chpasswd
 
     echo "$exp_date" > "$DATA_DIR/$username.exp"
-    echo -e "${GREEN}User SOCKS5 berhasil dibuat!${NC}"
-    echo -e "Username : ${YELLOW}$username${NC}"
-    echo -e "Password : ${YELLOW}$password${NC}"
-    echo -e "Expired  : ${YELLOW}$exp_date${NC}"
-
-    # Coba test koneksi
     proxy_ip=$(hostname -I | awk '{print $1}')
-    encoded_user=$(url_encode "$username")
-    encoded_pass=$(url_encode "$password")
     port=$(grep -oP 'internal: 0.0.0.0 port = \K[0-9]+' /etc/danted.conf 2>/dev/null || echo 1080)
 
-    echo -e "\n${CYAN}Tes koneksi SOCKS5...${NC}"
-    curl -x socks5://"$encoded_user":"$encoded_pass"@"$proxy_ip":"$port" https://ipinfo.io/json --max-time 5
+    echo -e "${GREEN}\nSOCKS5 Account Created Successfully!${NC}"
+    echo -e "--------------------------------------------"
+    echo -e " Username : ${YELLOW}$username${NC}"
+    echo -e " Password : ${YELLOW}$password${NC}"
+    echo -e " Expired  : ${YELLOW}$exp_date${NC}"
+    echo -e "--------------------------------------------"
+    echo -e "${CYAN}SOCKS5 : ${GREEN}${proxy_ip}:${port}:${username}:${password}${NC}"
+    echo -e "--------------------------------------------"
 }
 
 function delete_user() {
@@ -88,13 +86,15 @@ function renew_user() {
     echo "$new_exp" > "$DATA_DIR/$username.exp"
 
     echo -e "${GREEN}Renew berhasil!${NC}"
-    echo -e "Username : ${YELLOW}$username${NC}"
-    echo -e "Expired  : ${YELLOW}$new_exp${NC}"
+    echo -e "--------------------------------------------"
+    echo -e " Username : ${YELLOW}$username${NC}"
+    echo -e " Expired  : ${YELLOW}$new_exp${NC}"
+    echo -e "--------------------------------------------"
 }
 
 function list_users() {
     echo -e "${CYAN}Daftar User SOCKS5:${NC}"
-    echo "--------------------------------"
+    echo "--------------------------------------------"
     for u in $(awk -F: '$3>=1000 && $1!="nobody"{print $1}' /etc/passwd); do
         exp_file="$DATA_DIR/$u.exp"
         if [[ -f $exp_file ]]; then
@@ -102,19 +102,43 @@ function list_users() {
             echo -e "$u - Exp: ${YELLOW}$exp_date${NC}"
         fi
     done
-    echo "--------------------------------"
+    echo "--------------------------------------------"
 }
 
+function auto_delete_expired() {
+    today=$(date +%Y-%m-%d)
+    for user in $(ls $DATA_DIR/*.exp 2>/dev/null); do
+        username=$(basename "$user" .exp)
+        exp_date=$(cat "$user")
+        if [[ "$exp_date" < "$today" ]]; then
+            echo "Deleting expired user: $username ($exp_date)"
+            userdel "$username" 2>/dev/null
+            rm -f "$DATA_DIR/$username.exp"
+        fi
+    done
+}
+
+# Setup cron auto delete expired
+if ! crontab -l | grep -q "shock5 --auto"; then
+    (crontab -l 2>/dev/null; echo "0 0 * * * /usr/bin/shock5 --auto >/dev/null 2>&1") | crontab -
+fi
+
+# Handle auto mode (for cron)
+if [[ "$1" == "--auto" ]]; then
+    auto_delete_expired
+    exit 0
+fi
+
 clear
-echo -e "${CYAN}==============================${NC}"
-echo -e "${GREEN}   SOCKS5 ACCOUNT MANAGER     ${NC}"
-echo -e "${CYAN}==============================${NC}"
+echo -e "${CYAN}=====================================${NC}"
+echo -e "${GREEN}        SOCKS5 ACCOUNT MANAGER       ${NC}"
+echo -e "${CYAN}=====================================${NC}"
 echo -e "1) Add User"
 echo -e "2) Delete User"
 echo -e "3) Renew User"
 echo -e "4) List Users"
 echo -e "0) Exit"
-echo -e "${CYAN}==============================${NC}"
+echo -e "${CYAN}=====================================${NC}"
 read -p "Select menu: " opt
 
 case $opt in
