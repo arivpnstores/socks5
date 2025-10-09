@@ -19,7 +19,7 @@ This repository contains a script that helps you to setup a SOCKS5 proxy server 
 ## Installation
 Run the script
 ```bash
-wget -O socks5.sh https://raw.githubusercontent.com/saaiful/socks5/main/socks5.sh && sudo bash socks5.sh
+wget -O socks5.sh https://raw.githubusercontent.com/arivpnstores/socks5/main/socks5.sh && sudo bash socks5.sh
 ```
 
 You will be prompted for various options such as `reconfiguring`, `adding users`, or `uninstalling` the SOCKS5 server if it is already installed. During installation, you'll also be prompted for a `username` and `password` for the proxy authentication.
