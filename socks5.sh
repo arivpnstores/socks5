@@ -15,8 +15,7 @@ url_encode() {
 
 if ! command -v danted &>/dev/null; then
     echo -e "${YELLOW}Installing Dante SOCKS5 server...${NC}"
-    read -p "Enter port for SOCKS5 (default 1080): " port
-    port=${port:-1080}
+    port=1080
     sudo apt update -y && sudo apt install dante-server curl -y
     sudo touch /var/log/danted.log && sudo chown nobody:nogroup /var/log/danted.log
     iface=$(ip route | grep default | awk '{print $5}')
@@ -81,11 +80,9 @@ add_user() {
     exp_days=${exp_days:-30}
     exp_date=$(date -d "+$exp_days days" +"%Y-%m-%d")
     useradd -e "$exp_date" -s /usr/sbin/nologin "$user" &>/dev/null
-    echo "$user:$pass" | chpasswd
     echo "$user|$pass|$exp_date" >> "$DATA_FILE"
     systemctl restart danted
-    PORT=$(sed -n 's/.*port *= *\([0-9][0-9]*\).*/\1/p' /etc/danted.conf | head -n1)
-    [ -z "$PORT" ] && PORT=1080
+    PORT=1080
     echo -e "${GREEN}SOCKS5 : ${IP}:${PORT}:${user}:${pass}${NC}"
     echo -e "${YELLOW}Expired : ${exp_date} (${exp_days} days)${NC}"
 }
