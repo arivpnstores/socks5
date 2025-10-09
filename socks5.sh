@@ -1,17 +1,19 @@
 #!/bin/bash
+# SOCKS5 User Manager (Add / Delete / Renew)
+# Author: AriVPN Modified by ChatGPT GPT-5
 
-# Define color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to URL-encode username and password
-url_encode() {
-    local raw="$1"
-    local encoded=""
-    for (( i=0; i<${#raw}; i++ )); do
+DATA_DIR="/etc/shock5"
+[[ ! -d $DATA_DIR ]] && mkdir -p $DATA_DIR
+
+function url_encode() {
+    local raw="$1" encoded=""
+    for ((i=0; i<${#raw}; i++)); do
         char="${raw:i:1}"
         case "$char" in
             [a-zA-Z0-9._~-]) encoded+="$char" ;;
@@ -21,142 +23,105 @@ url_encode() {
     echo "$encoded"
 }
 
-# Check if danted is installed
-if command -v danted &> /dev/null; then
-    echo -e "${GREEN}Dante SOCKS5 server is already installed.${NC}"
-    echo -e "${CYAN}Do you want to (1) Reconfigure, (2) Add a new user, (3) Uninstall, or (4) Exit? (Enter 1, 2, 3, or 4):${NC}"
-    read choice
-    if [[ "$choice" == "1" ]]; then
-        echo -e "${CYAN}Reconfiguring requires a port. Please enter the port for the SOCKS5 proxy (default: 1080):${NC}"
-        read port
-        port=${port:-1080}
-        if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-            echo -e "${RED}Invalid port. Please enter a number between 1 and 65535.${NC}"
-            exit 1
-        fi
-        reconfigure=true
-        add_user=false
-    elif [[ "$choice" == "2" ]]; then
-        echo -e "${CYAN}Adding a new user...${NC}"
-        reconfigure=false
-        add_user=true
-    elif [[ "$choice" == "3" ]]; then
-        echo -e "${YELLOW}Uninstalling Dante SOCKS5 server...${NC}"
-        sudo systemctl stop danted
-        sudo systemctl disable danted
-        sudo apt remove --purge dante-server -y
-        sudo rm -f /etc/danted.conf /var/log/danted.log
-        echo -e "${GREEN}Dante SOCKS5 server has been uninstalled successfully.${NC}"
-        exit 0
-    else
-        echo -e "${YELLOW}Exiting.${NC}"
-        exit 0
-    fi
-else
-    echo -e "${YELLOW}Dante SOCKS5 server is not installed on this system.${NC}"
-    echo -e "${CYAN}Note: Port 1080 is commonly used for SOCKS5 proxies. However, it may be blocked by your ISP or server provider. If this happens, choose an alternate port.${NC}"
-    echo -e "${CYAN}Please enter the port for the SOCKS5 proxy (default: 1080):${NC}"
-    read port
-    port=${port:-1080}
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-        echo -e "${RED}Invalid port. Please enter a number between 1 and 65535.${NC}"
-        exit 1
-    fi
-    reconfigure=true
-    add_user=true
-fi
-
-# Install or Reconfigure Dante
-if [[ "$reconfigure" == "true" ]]; then
-    sudo apt update -y
-    sudo apt install dante-server curl -y
-    echo -e "${GREEN}Dante SOCKS5 server installed successfully.${NC}"
-
-    # Create the log file before starting the service
-    sudo touch /var/log/danted.log
-    sudo chown nobody:nogroup /var/log/danted.log
-
-    # Automatically detect the primary network interface
-    primary_interface=$(ip route | grep default | awk '{print $5}')
-    if [[ -z "$primary_interface" ]]; then
-        echo -e "${RED}Could not detect the primary network interface. Please check your network settings.${NC}"
-        exit 1
-    fi
-
-    # Create the configuration file
-    sudo bash -c "cat <<EOF > /etc/danted.conf
-logoutput: /var/log/danted.log
-internal: 0.0.0.0 port = $port
-external: $primary_interface
-method: username
-user.privileged: root
-user.notprivileged: nobody
-client pass {
-    from: 0/0 to: 0/0
-    log: connect disconnect error
-}
-socks pass {
-    from: 0/0 to: 0/0
-    log: connect disconnect error
-}
-EOF"
-
-    # Configure firewall rules
-    if sudo ufw status | grep -q "Status: active"; then
-        if ! sudo ufw status | grep -q "$port/tcp"; then
-            sudo ufw allow "$port/tcp"
-        fi
-    fi
-
-    if ! sudo iptables -L | grep -q "tcp dpt:$port"; then
-        sudo iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
-    fi
-
-    # Edit the systemd service file for danted
-    sudo sed -i '/\[Service\]/a ReadWriteDirectories=/var/log' /usr/lib/systemd/system/danted.service
-
-    # Reload the systemd daemon and restart the service
-    sudo systemctl daemon-reload
-    sudo systemctl restart danted
-    sudo systemctl enable danted
-
-    # Check if the service is active
-    if systemctl is-active --quiet danted; then
-        echo -e "${GREEN}\nSocks5 server has been reconfigured and is running on port - $port${NC}"
-    else
-        echo -e "${RED}\nFailed to start the Socks5 server. Please check the logs for more details: /var/log/danted.log${NC}"
-        exit 1
-    fi
-fi
-
-# Add user
-if [[ "$add_user" == "true" ]]; then
-    echo -e "${CYAN}Please enter the username for the SOCKS5 proxy:${NC}"
+function add_user() {
+    echo -e "${CYAN}Input Username:${NC}"
     read username
-    echo -e "${CYAN}Please enter the password for the SOCKS5 proxy:${NC}"
-    read -s password
+    [[ -z $username ]] && echo -e "${RED}Username tidak boleh kosong!${NC}" && exit 1
+
     if id "$username" &>/dev/null; then
-        echo -e "${YELLOW}User @$username already exists. Updating password.${NC}"
-    else
-        sudo useradd --shell /usr/sbin/nologin "$username"
-        echo -e "${GREEN}User @$username created successfully.${NC}"
+        echo -e "${RED}User $username sudah ada!${NC}"
+        exit 1
     fi
+
+    echo -e "${CYAN}Input Password:${NC}"
+    read -s password
+    echo -e "${CYAN}Input Masa Aktif (hari):${NC}"
+    read days
+
+    exp_date=$(date -d "$days days" +"%Y-%m-%d")
+    sudo useradd -e "$exp_date" -s /usr/sbin/nologin "$username"
     echo "$username:$password" | sudo chpasswd
-    echo -e "${GREEN}Password updated successfully for user: $username.${NC}"
-fi
 
-# Test the SOCKS5 proxy
-if [[ "$add_user" == "true" ]]; then
-    echo -e "${CYAN}\nTesting the SOCKS5 proxy with curl...${NC}"
+    echo "$exp_date" > "$DATA_DIR/$username.exp"
+    echo -e "${GREEN}User SOCKS5 berhasil dibuat!${NC}"
+    echo -e "Username : ${YELLOW}$username${NC}"
+    echo -e "Password : ${YELLOW}$password${NC}"
+    echo -e "Expired  : ${YELLOW}$exp_date${NC}"
+
+    # Coba test koneksi
     proxy_ip=$(hostname -I | awk '{print $1}')
-    encoded_username=$(url_encode "$username")
-    encoded_password=$(url_encode "$password")
+    encoded_user=$(url_encode "$username")
+    encoded_pass=$(url_encode "$password")
+    port=$(grep -oP 'internal: 0.0.0.0 port = \K[0-9]+' /etc/danted.conf 2>/dev/null || echo 1080)
 
-    curl -x socks5://"$encoded_username":"$encoded_password"@"$proxy_ip":"$port" https://ipinfo.io/
+    echo -e "\n${CYAN}Tes koneksi SOCKS5...${NC}"
+    curl -x socks5://"$encoded_user":"$encoded_pass"@"$proxy_ip":"$port" https://ipinfo.io/json --max-time 5
+}
 
-    if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}\nSOCKS5 proxy test successful. Proxy is working.${NC}"
-    else
-        echo -e "${RED}\nSOCKS5 proxy test failed. Please check your configuration.${NC}"
+function delete_user() {
+    echo -e "${CYAN}Input Username yang ingin dihapus:${NC}"
+    read username
+    if ! id "$username" &>/dev/null; then
+        echo -e "${RED}User tidak ditemukan!${NC}"
+        exit 1
     fi
-fi
+    sudo userdel "$username"
+    rm -f "$DATA_DIR/$username.exp"
+    echo -e "${GREEN}User $username berhasil dihapus.${NC}"
+}
+
+function renew_user() {
+    echo -e "${CYAN}Input Username yang ingin diperpanjang:${NC}"
+    read username
+    if ! id "$username" &>/dev/null; then
+        echo -e "${RED}User tidak ditemukan!${NC}"
+        exit 1
+    fi
+    echo -e "${CYAN}Tambahkan masa aktif berapa hari?:${NC}"
+    read days
+
+    current_exp=$(chage -l "$username" | grep "Account expires" | awk -F": " '{print $2}')
+    [[ $current_exp == "never" ]] && current_exp=$(date +"%Y-%m-%d")
+
+    new_exp=$(date -d "$current_exp + $days days" +"%Y-%m-%d")
+    sudo usermod -e "$new_exp" "$username"
+    echo "$new_exp" > "$DATA_DIR/$username.exp"
+
+    echo -e "${GREEN}Renew berhasil!${NC}"
+    echo -e "Username : ${YELLOW}$username${NC}"
+    echo -e "Expired  : ${YELLOW}$new_exp${NC}"
+}
+
+function list_users() {
+    echo -e "${CYAN}Daftar User SOCKS5:${NC}"
+    echo "--------------------------------"
+    for u in $(awk -F: '$3>=1000 && $1!="nobody"{print $1}' /etc/passwd); do
+        exp_file="$DATA_DIR/$u.exp"
+        if [[ -f $exp_file ]]; then
+            exp_date=$(cat "$exp_file")
+            echo -e "$u - Exp: ${YELLOW}$exp_date${NC}"
+        fi
+    done
+    echo "--------------------------------"
+}
+
+clear
+echo -e "${CYAN}==============================${NC}"
+echo -e "${GREEN}   SOCKS5 ACCOUNT MANAGER     ${NC}"
+echo -e "${CYAN}==============================${NC}"
+echo -e "1) Add User"
+echo -e "2) Delete User"
+echo -e "3) Renew User"
+echo -e "4) List Users"
+echo -e "0) Exit"
+echo -e "${CYAN}==============================${NC}"
+read -p "Select menu: " opt
+
+case $opt in
+    1) add_user ;;
+    2) delete_user ;;
+    3) renew_user ;;
+    4) list_users ;;
+    0) exit ;;
+    *) echo "Invalid option." ;;
+esac
