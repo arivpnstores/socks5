@@ -256,7 +256,7 @@ while true; do
   read -p "Select option: " opt
   case "$opt" in
     1) add_user ;;
-    2) del_user) del_user ;;  # fallthrough if mis-typed
+    2) del_user ;;
     2) del_user ;; 
     3) renew_user ;;
     4) list_users ;;
