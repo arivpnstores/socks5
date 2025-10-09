@@ -84,6 +84,8 @@ add_user() {
     echo "$user:$pass" | chpasswd
     echo "$user|$pass|$exp_date" >> "$DATA_FILE"
     systemctl restart danted
+    PORT=$(sed -n 's/.*port *= *\([0-9][0-9]*\).*/\1/p' /etc/danted.conf | head -n1)
+    [ -z "$PORT" ] && PORT=1080
     echo -e "${GREEN}SOCKS5 : ${IP}:${PORT}:${user}:${pass}${NC}"
     echo -e "${YELLOW}Expired : ${exp_date} (${exp_days} days)${NC}"
 }
