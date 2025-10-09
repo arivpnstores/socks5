@@ -1,4 +1,15 @@
 #!/bin/bash
+# SETUB INSTALLER INI JANGAN DI HAPUS
+#
+# (Bagian installer Dante kamu tetap utuh di bawah ini.
+#  Di akhir file ditambahkan manager untuk add/delete/renew/list/auto-expire)
+#
+# Author: (original) - kept as requested
+# Modified: Ari Setiawan + ChatGPT (gabungan installer + manager)
+
+# ----------------------------
+# BEGIN ORIGINAL INSTALLER
+# ----------------------------
 
 # Define color codes
 RED='\033[0;31m'
@@ -160,3 +171,204 @@ if [[ "$add_user" == "true" ]]; then
         echo -e "${RED}\nSOCKS5 proxy test failed. Please check your configuration.${NC}"
     fi
 fi
+
+# ----------------------------
+# END ORIGINAL INSTALLER
+# ----------------------------
+
+# ----------------------------
+# BEGIN ADDED MANAGER (ADD/DEL/RENEW/LIST/AUTO-EXPIRE)
+# ----------------------------
+
+# Manager config
+DATA_DIR="/etc/shock5"
+PASSFILE="/etc/danted/sockd.passwd"
+CRON_MARKER="# shock5-auto-delete"
+DEFAULT_PORT="${port:-1080}"
+[[ ! -d $DATA_DIR ]] && sudo mkdir -p $DATA_DIR && sudo chmod 700 $DATA_DIR
+[[ ! -d $(dirname "$PASSFILE") ]] && sudo mkdir -p "$(dirname "$PASSFILE")"
+sudo touch "$PASSFILE" 2>/dev/null || true
+sudo chmod 600 "$PASSFILE" 2>/dev/null || true
+
+# Helper url_encode is already defined above
+
+# Add user (manager)
+add_user_mgr() {
+    read -p "Input Username: " username
+    [[ -z $username ]] && echo -e "${RED}Username tidak boleh kosong!${NC}" && return 1
+
+    if id "$username" &>/dev/null; then
+        echo -e "${YELLOW}User $username sudah ada di sistem. Ganti password dan update expiry.${NC}"
+    else
+        sudo useradd --shell /usr/sbin/nologin "$username"
+        echo -e "${GREEN}User $username dibuat di sistem.${NC}"
+    fi
+
+    read -s -p "Input Password: " password
+    echo
+    read -p "Masa aktif (hari) [contoh 30]: " days
+    days=${days:-30}
+
+    # Set system password
+    echo "$username:$password" | sudo chpasswd
+
+    # Calculate expiry date and set
+    exp_date=$(date -d "+$days days" +"%Y-%m-%d")
+    sudo usermod -e "$exp_date" "$username"
+
+    # Save exp info for manager
+    echo "$exp_date" | sudo tee "$DATA_DIR/$username.exp" >/dev/null
+
+    # Save plain entry to PASSFILE for record (username:password)
+    # Warning: this file is plain — permissions restricted to root
+    if sudo grep -q "^${username}:" "$PASSFILE" 2>/dev/null; then
+        # replace line
+        sudo sed -i "s|^${username}:.*|${username}:${password}|" "$PASSFILE" 2>/dev/null || true
+    else
+        echo "${username}:${password}" | sudo tee -a "$PASSFILE" >/dev/null
+    fi
+    sudo chmod 600 "$PASSFILE"
+
+    # Output requested format
+    proxy_ip=$(hostname -I | awk '{print $1}')
+    port_from_conf=$(grep -oP 'internal: 0.0.0.0 port = \K[0-9]+' /etc/danted.conf 2>/dev/null || echo "$DEFAULT_PORT")
+
+    echo -e "${GREEN}\nSOCKS5 Account Created Successfully!${NC}"
+    echo "--------------------------------------------"
+    echo -e " Username : ${YELLOW}$username${NC}"
+    echo -e " Password : ${YELLOW}$password${NC}"
+    echo -e " Expired  : ${YELLOW}$exp_date (${days} days)${NC}"
+    echo "--------------------------------------------"
+    echo -e "${CYAN}SOCKS5 : ${GREEN}${proxy_ip}:${port_from_conf}:${username}:${password}${NC}"
+    echo "--------------------------------------------"
+}
+
+# Delete user (manager)
+delete_user_mgr() {
+    read -p "Input Username yang ingin dihapus: " username
+    [[ -z $username ]] && echo -e "${RED}Username kosong!${NC}" && return 1
+
+    if ! id "$username" &>/dev/null; then
+        echo -e "${RED}User tidak ditemukan di sistem.${NC}" && return 1
+    fi
+
+    sudo userdel "$username" 2>/dev/null || true
+    sudo rm -f "$DATA_DIR/$username.exp"
+    # Remove from passfile
+    sudo sed -i "/^${username}:/d" "$PASSFILE" 2>/dev/null || true
+
+    echo -e "${GREEN}User $username berhasil dihapus (sistem + record).${NC}"
+}
+
+# Renew user (manager)
+renew_user_mgr() {
+    read -p "Input Username yang ingin diperpanjang: " username
+    [[ -z $username ]] && echo -e "${RED}Username kosong!${NC}" && return 1
+
+    if ! id "$username" &>/dev/null; then
+        echo -e "${RED}User tidak ditemukan di sistem.${NC}" && return 1
+    fi
+
+    read -p "Tambahkan masa aktif berapa hari?: " days
+    days=${days:-30}
+
+    current_exp=$(chage -l "$username" | grep "Account expires" | awk -F": " '{print $2}')
+    if [[ "$current_exp" == "never" ]] || [[ -z "$current_exp" ]]; then
+        base_date=$(date +"%Y-%m-%d")
+    else
+        base_date=$(date -d "$current_exp" +"%Y-%m-%d" 2>/dev/null || date +"%Y-%m-%d")
+    fi
+
+    new_exp=$(date -d "$base_date + $days days" +"%Y-%m-%d")
+    sudo usermod -e "$new_exp" "$username"
+    echo "$new_exp" | sudo tee "$DATA_DIR/$username.exp" >/dev/null
+
+    echo -e "${GREEN}Renew berhasil!${NC}"
+    echo "--------------------------------------------"
+    echo -e " Username : ${YELLOW}$username${NC}"
+    echo -e " Expired  : ${YELLOW}$new_exp${NC}"
+    echo "--------------------------------------------"
+}
+
+# List users (manager)
+list_users_mgr() {
+    echo -e "${CYAN}Daftar user (sistem) & expiry (dari $DATA_DIR):${NC}"
+    echo "--------------------------------------------"
+    # show only users with UID >= 1000 (typical non-system) plus check exp files
+    awk -F: '$3>=1000 && $1!="nobody"{print $1}' /etc/passwd | while read u; do
+        exp_file="$DATA_DIR/$u.exp"
+        if [[ -f $exp_file ]]; then
+            exp_date=$(cat "$exp_file")
+            echo -e "$u - Exp: ${YELLOW}$exp_date${NC}"
+        else
+            echo -e "$u - Exp: ${YELLOW}never(or not recorded)${NC}"
+        fi
+    done
+    echo "--------------------------------------------"
+    echo -e "${CYAN}Plain recordfile: ${PASSFILE} (permission 600)${NC}"
+}
+
+# Auto-delete expired (to be called by cron)
+auto_delete_expired() {
+    today=$(date +%Y-%m-%d)
+    for f in "$DATA_DIR"/*.exp 2>/dev/null; do
+        [[ ! -f "$f" ]] && continue
+        username=$(basename "$f" .exp)
+        exp_date=$(cat "$f")
+        # if exp_date less than today -> delete
+        if [[ "$exp_date" < "$today" ]]; then
+            echo "Deleting expired user: $username (expired $exp_date)"
+            sudo userdel "$username" 2>/dev/null || true
+            sudo sed -i "/^${username}:/d" "$PASSFILE" 2>/dev/null || true
+            sudo rm -f "$DATA_DIR/$username.exp"
+        fi
+    done
+}
+
+# Setup cron job for daily auto-delete at 00:00 if not present
+setup_cron() {
+    local cronjob="0 0 * * * /bin/bash $(readlink -f "$0") --auto >/dev/null 2>&1"
+    # install if not exist
+    (crontab -l 2>/dev/null | grep -v -F "$CRON_MARKER" || true) >/tmp/current_cron.$$ 2>/dev/null
+    if ! crontab -l 2>/dev/null | grep -q "$(echo "$cronjob" | sed 's/\//\\\//g')"; then
+        (crontab -l 2>/dev/null; echo "$CRON_MARKER"; echo "$cronjob") | crontab -
+    fi
+    rm -f /tmp/current_cron.$$ 2>/dev/null || true
+}
+
+# If script is called with --auto, run auto delete and exit
+if [[ "$1" == "--auto" ]]; then
+    auto_delete_expired
+    exit 0
+fi
+
+# Ensure cron is setup
+setup_cron
+
+# Manager CLI menu (runs after installer finishes)
+echo
+echo -e "${CYAN}==============================${NC}"
+echo -e "${GREEN}   SOCKS5 MANAGER (combined)  ${NC}"
+echo -e "${CYAN}==============================${NC}"
+echo -e "1) Add User"
+echo -e "2) Delete User"
+echo -e "3) Renew User"
+echo -e "4) List Users"
+echo -e "5) Show /etc/danted/sockd.passwd (root only)"
+echo -e "0) Exit"
+echo -e "${CYAN}==============================${NC}"
+read -p "Select menu: " opt_mgr
+
+case $opt_mgr in
+    1) add_user_mgr ;;
+    2) delete_user_mgr ;;
+    3) renew_user_mgr ;;
+    4) list_users_mgr ;;
+    5) echo -e "${YELLOW}File: $PASSFILE (permission 600)${NC}"; sudo cat "$PASSFILE" || true ;;
+    0) echo "Exiting manager." ;;
+    *) echo "Invalid option." ;;
+esac
+
+# ----------------------------
+# END ADDED MANAGER
+# ----------------------------
