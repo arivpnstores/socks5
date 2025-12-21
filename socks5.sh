@@ -102,22 +102,40 @@ add_user() {
     echo -e "${YELLOW}Empty password not allowed.${NC}"; return 1
   fi
 
-  read -p "Expired (days, default ${DEFAULT_EXP_DAYS}): " days
-  days=${days:-$DEFAULT_EXP_DAYS}
-  if ! [[ "$days" =~ ^[0-9]+$ ]]; then days=$DEFAULT_EXP_DAYS; fi
+read -p "Expired (days, 0 = lifetime, default ${DEFAULT_EXP_DAYS}): " days
+days=${days:-$DEFAULT_EXP_DAYS}
+if ! [[ "$days" =~ ^[0-9]+$ ]]; then days=$DEFAULT_EXP_DAYS; fi
 
+if [[ "$days" -eq 0 ]]; then
+  exp_date="LIFETIME"
+else
   exp_date=$(date -d "+${days} days" +"%Y-%m-%d")
+fi
 
-  if id "$user" >/dev/null 2>&1; then
-    echo -e "${YELLOW}User exists: updating password & expiry.${NC}"
-    echo "${user}:${pass}" | chpasswd
-    usermod -e "$exp_date" "$user" 2>/dev/null || true
+if id "$user" >/dev/null 2>&1; then
+  echo -e "${YELLOW}User exists: updating password & expiry.${NC}"
+  echo "${user}:${pass}" | chpasswd
+
+  if [[ "$exp_date" == "LIFETIME" ]]; then
+    usermod -e "" "$user" 2>/dev/null || true
   else
-    useradd --shell /usr/sbin/nologin --create-home false "$user" 2>/dev/null || useradd --shell /usr/sbin/nologin "$user" 2>/dev/null || true
-    echo "${user}:${pass}" | chpasswd
     usermod -e "$exp_date" "$user" 2>/dev/null || true
-    echo -e "${GREEN}System user $user created.${NC}"
   fi
+
+else
+  useradd --shell /usr/sbin/nologin --create-home false "$user" 2>/dev/null \
+    || useradd --shell /usr/sbin/nologin "$user" 2>/dev/null || true
+
+  echo "${user}:${pass}" | chpasswd
+
+  if [[ "$exp_date" == "LIFETIME" ]]; then
+    usermod -e "" "$user" 2>/dev/null || true
+  else
+    usermod -e "$exp_date" "$user" 2>/dev/null || true
+  fi
+
+  echo -e "${GREEN}System user $user created.${NC}"
+fi
 
   # Update DB (remove old line then append)
   sed -i "/^${user}|/d" "$DATA_FILE" 2>/dev/null || true
@@ -216,20 +234,33 @@ setup_cron() {
   cat > /etc/cron.daily/socks5-cleaner <<'EOF'
 #!/bin/bash
 DB="/etc/socks5/users.db"
+PASSFILE="/etc/danted/sockd.passwd"
 TODAY=$(date +%Y-%m-%d)
 tmp=$(mktemp)
+
 while IFS='|' read -r u p e; do
-  if [[ -z "$u" ]]; then continue; fi
+  # skip baris kosong
+  [[ -z "$u" ]] && continue
+
+  # skip lifetime account
+  if [[ "$e" == "LIFETIME" ]]; then
+    echo "${u}|${p}|${e}" >> "$tmp"
+    continue
+  fi
+
+  # delete jika expired
   if [[ "$TODAY" > "$e" ]]; then
     userdel -r "$u" 2>/dev/null || true
-    sed -i "/^${u}:/d" /etc/danted/sockd.passwd 2>/dev/null || true
+    sed -i "/^${u}:/d" "$PASSFILE" 2>/dev/null || true
   else
     echo "${u}|${p}|${e}" >> "$tmp"
   fi
 done < "$DB"
+
 mv "$tmp" "$DB"
 chmod 600 "$DB"
 EOF
+
   chmod +x /etc/cron.daily/socks5-cleaner
 }
 
