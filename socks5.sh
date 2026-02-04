@@ -162,7 +162,7 @@ install_socks5() {
   svc_restart "$svc"
 
   echo -e "${GREEN}DONE: SOCKS5 aktif di port ${port}${NC}"
-  echo -e "${CYAN}Cek:${NC} ss -lntup | grep :${port} || (systemctl status ${svc} --no-pager)"
+  echo -e "${CYAN}Cek:${NC} systemctl status danted --no-pager"
 }
 
 uninstall_socks5() {
