@@ -41,6 +41,52 @@ ensure_base_files() {
   chmod 600 "$PASSFILE"
 }
 
+# ---- APT SAFE UPDATE (fix broken backports automatically) ----
+disable_broken_backports() {
+  # comment any bullseye-backports lines in sources
+  local changed=0
+  if grep -Rqs "bullseye-backports" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
+    sed -i 's/^[[:space:]]*deb[[:space:]].*bullseye-backports.*$/# &/g' \
+      /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+    sed -i 's/^[[:space:]]*deb-src[[:space:]].*bullseye-backports.*$/# &/g' \
+      /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+    changed=1
+  fi
+  return $changed
+}
+
+apt_update_safe() {
+  # run apt-get update; if failed because broken backports/release file, auto-disable and retry
+  local log
+  log="$(mktemp)"
+  echo -e "${CYAN}Running apt-get update...${NC}"
+  set +e
+  apt-get update -y 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+
+  if [[ $rc -eq 0 ]]; then
+    rm -f "$log" || true
+    return 0
+  fi
+
+  # detect common errors
+  if grep -qiE "bullseye-backports|does not have a Release file|Updating from such a repository can't be done securely|404[[:space:]]+Not Found" "$log"; then
+    echo -e "${YELLOW}APT update failed due to repo issue (likely bullseye-backports). Auto-fixing...${NC}"
+    disable_broken_backports || true
+
+    echo -e "${CYAN}Retrying apt-get update...${NC}"
+    set +e
+    apt-get update -y 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    set -e
+  fi
+
+  rm -f "$log" || true
+  return $rc
+}
+# -------------------------------------------------------------
+
 restart_danted() {
   if is_systemd; then
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -91,7 +137,6 @@ while IFS='|' read -r u p e; do
     continue
   fi
 
-  # delete jika expired (string compare aman format YYYY-MM-DD)
   if [[ "$TODAY" > "$e" ]]; then
     userdel -r "$u" 2>/dev/null || true
     sed -i "/^${u}:/d" "$PASSFILE" 2>/dev/null || true
@@ -136,13 +181,18 @@ auto_delete_expired() {
 install_socks5() {
   echo -e "${CYAN}Installing Dante SOCKS5 (port ${PORT})...${NC}"
 
-  # Debian/Ubuntu check (basic)
   if [[ ! -f /etc/debian_version ]]; then
     echo -e "${YELLOW}Warning: this installer is designed for Debian/Ubuntu (APT). Proceeding anyway...${NC}"
   fi
 
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
+
+  if ! apt_update_safe; then
+    echo -e "${RED}apt-get update failed. Please fix your APT sources manually.${NC}"
+    echo -e "${YELLOW}Tip: check /etc/apt/sources.list and /etc/apt/sources.list.d/*.list${NC}"
+    return 1
+  fi
+
   apt-get install -y dante-server curl iproute2
 
   # log file
@@ -191,7 +241,6 @@ EOF
 uninstall_socks5() {
   echo -e "${RED}Uninstalling SOCKS5 (Dante) + cleaning files...${NC}"
 
-  # stop service
   if is_systemd; then
     systemctl stop danted >/dev/null 2>&1 || true
     systemctl disable danted >/dev/null 2>&1 || true
@@ -200,12 +249,10 @@ uninstall_socks5() {
     update-rc.d -f danted remove >/dev/null 2>&1 || true
   fi
 
-  # remove packages
   export DEBIAN_FRONTEND=noninteractive
   apt-get remove --purge -y dante-server >/dev/null 2>&1 || true
   apt-get autoremove -y >/dev/null 2>&1 || true
 
-  # remove config & data
   rm -f "$DANTED_CONF" >/dev/null 2>&1 || true
   rm -f "$CRON_FILE" >/dev/null 2>&1 || true
   rm -rf "$DATA_DIR" >/dev/null 2>&1 || true
@@ -303,7 +350,6 @@ renew_user() {
   [[ "$add_days" =~ ^[0-9]+$ ]] || { echo -e "${RED}Invalid days.${NC}"; return 1; }
 
   old_exp="$(awk -F'|' -v u="$user" '$1==u {print $3; exit}' "$DATA_FILE" 2>/dev/null || true)"
-
   if [[ -z "$old_exp" || "$old_exp" == "LIFETIME" ]]; then
     old_exp="$(date +"%Y-%m-%d")"
   fi
@@ -380,7 +426,6 @@ main_menu() {
   done
 }
 
-# If called with --auto -> just run cleanup and exit
 if [[ "${1:-}" == "--auto" ]]; then
   auto_delete_expired
   exit 0
